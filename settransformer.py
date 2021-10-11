@@ -48,12 +48,13 @@ class InducedSetAttentionBlock(keras.layers.Layer):
         
     def build(self, input_shape):
         self.inducing_points = self.add_weight(
-            shape=(1, self.num_induce, self.dim_out),
+            shape=(1, self.num_induce, self.embed_dim),
             initializer="glorot_uniform", # xavier_uniform from pytorch implementation
             trainable=True)
         
     def call(self, x):
-        i = tf.repeat(self.inducing_points, tf.shape(x)[0], axis=0)
+        batch_size = tf.shape(x)[0]
+        i = tf.tile(self.inducing_points, (batch_size, 1, 1))
         h = self.mab1(i, x)
         return self.mab2(x, h)
     
@@ -73,7 +74,7 @@ class PoolingByMultiHeadAttention(keras.layers.Layer):
         
     def call(self, z):
         batch_size = tf.shape(z)[0]
-        seeds = tf.repeat(self.seed_vectors, batch_size, axis=0)
+        seeds = tf.tile(self.seed_vectors, (batch_size, 1, 1))
         return self.mab(seeds, z)
     
     
