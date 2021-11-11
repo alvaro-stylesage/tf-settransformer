@@ -120,12 +120,19 @@ class InducedSetAttentionBlock(keras.layers.Layer):
         return self.mab2(x, h)
     
     
+# Pooling Methods ----------------------------------------------------------------------------------
+    
 class PoolingByMultiHeadAttention(keras.layers.Layer):
     def __init__(self, num_seeds, embed_dim, num_heads, activation=DEFAULT_ACTIVATION_FN, layernorm=False, **kwargs):
         super(PoolingByMultiHeadAttention, self).__init__(**kwargs)
         self.num_seeds = num_seeds
         self.embed_dim = embed_dim
         self.mab = MultiHeadAttentionBlock(embed_dim, num_heads, activation, layernorm)
+        
+        self.seed_vectors = self.add_weight(
+            shape=(1, self.num_seeds, self.embed_dim),
+            initializer="random_normal",
+            trainable=True)
         
     def build(self, input_shape):
         self.seed_vectors = self.add_weight(
@@ -139,8 +146,20 @@ class PoolingByMultiHeadAttention(keras.layers.Layer):
         return self.mab(seeds, z)
     
     
+class InducedSetEncoder(PoolingByMultiHeadAttention):
+    """
+    Same as PMA, except resulting rows are summed together.
+    """
+    def __init__(self, *args, **kwargs):
+        super(InducedSetEncoder, self).__init__(*args, **kwargs)
+        
+    def call(self, x):
+        out = super(InducedSetEncoder, self).call(x)
+        return tf.reduce_sum(out, axis=1)
+    
 # Alias exports
 MAB = MultiHeadAttentionBlock
 SAB = SetAttentionBlock
 ISAB = InducedSetAttentionBlock
 PMA = PoolingByMultiHeadAttention
+ISE = InducedSetEncoder
