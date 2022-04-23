@@ -11,51 +11,36 @@ import tensorflow.keras as keras
 
 DEFAULT_ACTIVATION_FN = "relu"
 
-# Use Keras implementation of multi-head attention
-_config = {
-    "use_keras_mha": False
-}
+# Utility Functions --------------------------------------------------------------------------------
 
-def config(*args):
-    """
-    Indicate whether or not to use Keras'
-    implementation of multi-head attention
-    """
-    if len(args) == 0:
-        return _config
-    if len(args) > 2:
-        raise Exception("Too many arguments. Should be: key, [value]")
-    if len(args) == 2:
-        _config[args[0]] = args[1]
-    return _config[args[0]]
+def spectral_norm(*args, **kwargs):
+    import tensorflow_addons as tfa
+    return tfa.layers.SpectralNormalization(*args, **kwargs)
+
+def dense(dim, activation=None, use_spectral_norm=False):
+    layer = keras.layers.Dense(dim, activation=activation)
+    if use_spectral_norm:
+        layer = spectral_norm(layer)
+    return layer
     
+# Layer Definitions --------------------------------------------------------------------------------
 
-class MultiHeadAttentionBlock(keras.layers.Layer):
-    def __init__(self, embed_dim, num_heads, activation=DEFAULT_ACTIVATION_FN, layernorm=False):
-        super(MultiHeadAttentionBlock, self).__init__()
+class MultiHeadAttention(keras.layers.Layer):
+    def __init__(self, embed_dim, num_heads, use_spectral_norm=False, **kwargs):
+        super(MultiHeadAttention, self).__init__(**kwargs)
+        
+        assert embed_dim % num_heads == 0, "Embed dim must be divisible by the number of heads"
+        
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.layernorm = layernorm
-        self.ffn = keras.layers.Dense(embed_dim, activation=activation)
+        self.use_spectral_norm = use_spectral_norm
         
-        # Attention method
-        if _config["use_keras_mha"]:
-            self.att = keras.layers.MultiHeadAttention(key_dim=embed_dim, num_heads=num_heads)
-        else:
-            self.fc_q = keras.layers.Dense(embed_dim)
-            self.fc_k = keras.layers.Dense(embed_dim)
-            self.fc_v = keras.layers.Dense(embed_dim)
-            self.att = self.compute_multihead_attention
-            
-        # Use layer normalization
-        if self.layernorm:
-            self.layernorm1 = keras.layers.LayerNormalization(epsilon=1e-6)
-            self.layernorm2 = keras.layers.LayerNormalization(epsilon=1e-6)
-
-    def compute_output_shape(self, input_shape):
-        return input_shape
-    
-    def compute_multihead_attention(self, q, v, k=None):
+        self.fc_q = dense(embed_dim, None, use_spectral_norm)
+        self.fc_k = dense(embed_dim, None, use_spectral_norm)
+        self.fc_v = dense(embed_dim, None, use_spectral_norm)
+        
+        
+    def call(self, q, v, k=None, training=None):
         """
         Compute multi-head attention in exactly the same manner
         as the official implementation.
@@ -77,35 +62,138 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         out = tf.concat(tf.split(tf.matmul(att, v_split), self.num_heads, 0), 2)
         return out
         
-    def call(self, x, y):
-        out = x + self.att(x, y, y) # query, value (optional key defaults to value)
+    def get_config(self):
+        config = super(MultiHeadAttention, self).get_config()
+        config.update({
+            "embed_dim": self.embed_dim,
+            "num_heads": self.num_heads,
+            "use_spectral_norm": self.use_spectral_norm
+        })
+        return config
+
+    
+class MultiHeadAttentionBlock(keras.layers.Layer):
+    def __init__(self,
+                 embed_dim,
+                 num_heads,
+                 ff_dim=None,
+                 ff_activation=DEFAULT_ACTIVATION_FN,
+                 layernorm=True,
+                 prelayernorm=False,
+                 is_final=False,
+                 use_keras_mha=True,
+                 use_spectral_norm=False,
+                 **kwargs):
+        super(MultiHeadAttentionBlock, self).__init__(**kwargs)
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.ff_dim = embed_dim if ff_dim is None else ff_dim
+        self.ff_activation = ff_activation
+        self.layernorm = layernorm
+        self.prelayernorm = prelayernorm
+        self.is_final = is_final
+        self.use_keras_mha = use_keras_mha
+        self.use_spectral_norm = use_spectral_norm
+        
+        # Attention layer
+        if use_keras_mha:
+            self.att = keras.layers.MultiHeadAttention(key_dim=embed_dim, num_heads=num_heads)
+        else:
+            self.att = MultiHeadAttention(embed_dim, num_heads, use_spectral_norm)
+        
+        # Feed-forward layer
+        ff_dim = embed_dim if ff_dim is None else ff_dim
+        self.ffn = dense(ff_dim, ff_activation, use_spectral_norm)
+            
+        # Use layer normalization (yeah, this could be improved somehow...)
         if self.layernorm:
-            out = self.layernorm1(out)        
-        out = out + self.ffn(out)
+            self.layernorm1 = keras.layers.LayerNormalization(epsilon=1e-6)
+            self.layernorm2 = keras.layers.LayerNormalization(epsilon=1e-6)
+            if self.prelayernorm:
+                self.layernorm3 = keras.layers.LayerNormalization(epsilon=1e-6)
+                if self.is_final:
+                    self.layernorm4 = keras.layers.LayerNormalization(epsilon=1e-6)
+        
+        
+    def call_prenorm(self, x, y, training=None):
+        x_norm = self.layernorm1(x)
+        y_norm = x_norm if y is None else self.layernorm2(y)
+        
+        # Multi-head attention
+        attn = x + self.att(x_norm, y_norm, y_norm)
+        
+        # ff-projection
+        out = self.layernorm3(attn)
+        out = attn + self.ffn(out)
+        
+        if self.is_final:
+            out = self.layernorm4(out)
+        
+        return out
+        
+        
+    def call(self, x, y=None, training=None):
+        if self.layernorm and self.prelayernorm:
+            return self.call_prenorm(x, y, training)
+        
+        if y is None:
+            y = x
+        
+        # Multi-head attention
+        attn = x + self.att(x, y, y)
+        if self.layernorm:
+            attn = self.layernorm1(attn)
+        
+        # ff-projection
+        out = attn + self.ffn(attn)
         if self.layernorm:
             out = self.layernorm2(out)
         return out
-
-
-class SetAttentionBlock(keras.layers.Layer):
-    def __init__(self, embed_dim, num_heads, activation=DEFAULT_ACTIVATION_FN, layernorm=False):
-        super(SetAttentionBlock, self).__init__()
-        self.mab = MultiHeadAttentionBlock(embed_dim, num_heads, activation, layernorm)
-        
-    def compute_output_shape(self, *args):
-        return self.mab.compute_output_shape(*args)
     
-    def call(self, x):
-        return self.mab(x, x)
+    
+    def get_config(self):
+        config = super(MultiHeadAttentionBlock, self).get_config()
+        config.update({
+            "embed_dim": self.embed_dim,
+            "num_heads": self.num_heads,
+            "ff_dim": self.ff_dim,
+            "ff_activation": self.ff_activation,
+            "layernorm": self.layernorm,
+            "prelayernorm": self.prelayernorm,
+            "is_final": self.is_final,
+            "use_keras_mha": self.use_keras_mha,
+            "use_spectral_norm": self.use_spectral_norm
+        })
+        return config
+
+
+class SetAttentionBlock(MultiHeadAttentionBlock):
+    def call(self, x, training=None):
+        return super(SetAttentionBlock, self).call(x, training=training)
     
     
 class InducedSetAttentionBlock(keras.layers.Layer):
-    def __init__(self, embed_dim, num_heads, num_induce, activation=DEFAULT_ACTIVATION_FN, layernorm=False):
-        super(InducedSetAttentionBlock, self).__init__()
+    def __init__(self,
+                 embed_dim,
+                 num_heads,
+                 ff_dim=None,
+                 ff_activation=DEFAULT_ACTIVATION_FN,
+                 layernorm=True,
+                 prelayernorm=False,
+                 is_final=False,
+                 use_keras_mha=True,
+                 use_spectral_norm=False,
+                 **kwargs):
+        super(InducedSetAttentionBlock, self).__init__(**kwargs)
         self.embed_dim = embed_dim
+        self.num_heads = num_heads
         self.num_induce = num_induce
-        self.mab1 = MultiHeadAttentionBlock(embed_dim, num_heads, activation, layernorm)
-        self.mab2 = MultiHeadAttentionBlock(embed_dim, num_heads, activation, layernorm)
+        self.mab1 = MultiHeadAttentionBlock(
+            embed_dim, num_heads, ff_dim, ff_activation, layernorm,
+            prelayernorm, False, use_keras_mha, use_spectral_norm)
+        self.mab2 = MultiHeadAttentionBlock(
+            embed_dim, num_heads, ff_dim, ff_activation, layernorm,
+            prelayernorm, is_final, use_keras_mha, use_spectral_norm)
         
     def build(self, input_shape):
         self.inducing_points = self.add_weight(
@@ -119,20 +207,44 @@ class InducedSetAttentionBlock(keras.layers.Layer):
         h = self.mab1(i, x)
         return self.mab2(x, h)
     
+    def get_config(self):
+        config = super(InducedSetAttentionBlock, self).get_config()
+        config.update({
+            "embed_dim": self.embed_dim,
+            "num_heads": self.num_heads,
+            "ff_dim": self.mab2.ff_dim,
+            "ff_activation": self.mab2.ff_activation,
+            "layernorm": self.mab2.layernorm,
+            "prelayernorm": self.mab2.prelayernorm,
+            "is_final": self.mab2.is_final,
+            "use_keras_mha": self.mab2.use_keras_mha,
+            "use_spectral_norm": self.mab2.use_spectral_norm
+        })
+        return config
+    
     
 # Pooling Methods ----------------------------------------------------------------------------------
     
 class PoolingByMultiHeadAttention(keras.layers.Layer):
-    def __init__(self, num_seeds, embed_dim, num_heads, activation=DEFAULT_ACTIVATION_FN, layernorm=False, **kwargs):
+    def __init__(self,
+                 num_seeds,
+                 embed_dim,
+                 num_heads,
+                 ff_dim=None,
+                 ff_activation=DEFAULT_ACTIVATION_FN,
+                 layernorm=True,
+                 prelayernorm=False,
+                 is_final=False,
+                 use_keras_mha=True,
+                 use_spectral_norm=False,
+                 **kwargs):
         super(PoolingByMultiHeadAttention, self).__init__(**kwargs)
         self.num_seeds = num_seeds
         self.embed_dim = embed_dim
-        self.mab = MultiHeadAttentionBlock(embed_dim, num_heads, activation, layernorm)
-        
-        self.seed_vectors = self.add_weight(
-            shape=(1, self.num_seeds, self.embed_dim),
-            initializer="random_normal",
-            trainable=True)
+        self.mab = MultiHeadAttentionBlock(
+            embed_dim, num_heads, ff_dim, ff_activation, layernorm,
+            prelayernorm, is_final, use_keras_mha, use_spectral_norm)
+
         
     def build(self, input_shape):
         self.seed_vectors = self.add_weight(
@@ -140,19 +252,34 @@ class PoolingByMultiHeadAttention(keras.layers.Layer):
             initializer="random_normal",
             trainable=True)
         
+        
     def call(self, z):
         batch_size = tf.shape(z)[0]
         seeds = tf.tile(self.seed_vectors, (batch_size, 1, 1))
         return self.mab(seeds, z)
     
     
+    def get_config(self):
+        config = super(PoolingByMultiHeadAttention, self).get_config()
+        config.update({
+            "num_seeds": self.num_seeds,
+            "embed_dim": self.embed_dim,
+            "num_heads": self.num_heads,
+            "ff_dim": self.mab2.ff_dim,
+            "ff_activation": self.mab.ff_activation,
+            "layernorm": self.mab.layernorm,
+            "prelayernorm": self.mab.prelayernorm,
+            "is_final": self.mab.is_final,
+            "use_keras_mha": self.mab.use_keras_mha,
+            "use_spectral_norm": self.mab.use_spectral_norm
+        })
+        return config
+    
+    
 class InducedSetEncoder(PoolingByMultiHeadAttention):
     """
     Same as PMA, except resulting rows are summed together.
-    """
-    def __init__(self, *args, **kwargs):
-        super(InducedSetEncoder, self).__init__(*args, **kwargs)
-        
+    """ 
     def call(self, x):
         out = super(InducedSetEncoder, self).call(x)
         return tf.reduce_sum(out, axis=1)
