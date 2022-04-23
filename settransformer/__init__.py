@@ -176,6 +176,7 @@ class InducedSetAttentionBlock(keras.layers.Layer):
     def __init__(self,
                  embed_dim,
                  num_heads,
+                 num_induce,
                  ff_dim=None,
                  ff_activation=DEFAULT_ACTIVATION_FN,
                  layernorm=True,
@@ -212,8 +213,69 @@ class InducedSetAttentionBlock(keras.layers.Layer):
         config.update({
             "embed_dim": self.embed_dim,
             "num_heads": self.num_heads,
+            "num_induce": self.num_induce,
             "ff_dim": self.mab2.ff_dim,
             "ff_activation": self.mab2.ff_activation,
+            "layernorm": self.mab2.layernorm,
+            "prelayernorm": self.mab2.prelayernorm,
+            "is_final": self.mab2.is_final,
+            "use_keras_mha": self.mab2.use_keras_mha,
+            "use_spectral_norm": self.mab2.use_spectral_norm
+        })
+        return config
+    
+
+class ConditionedSetAttentionBlock(keras.layers.Layer):
+    def __init__(self,
+                 embed_dim,
+                 num_heads,
+                 num_anchors,
+                 ff_dim=None,
+                 ff_activation=DEFAULT_ACTIVATION_FN,
+                 mlp_dim=None,
+                 mlp_activation=DEFAULT_ACTIVATION_FN,
+                 layernorm=True,
+                 prelayernorm=False,
+                 is_final=False,
+                 use_keras_mha=True,
+                 use_spectral_norm=False,
+                 **kwargs):
+        super(ConditionedSetAttentionBlock, self).__init__(**kwargs)
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.num_anchors = num_anchors
+        self.mlp_dim = mlp_dim if mlp_dim is not None else 2*embed_dim
+        self.mlp_activation = mlp_activation
+        self.mab1 = MultiHeadAttentionBlock(
+            embed_dim, num_heads, ff_dim, ff_activation, layernorm,
+            prelayernorm, False, use_keras_mha, use_spectral_norm)
+        self.mab2 = MultiHeadAttentionBlock(
+            embed_dim, num_heads, ff_dim, ff_activation, layernorm,
+            prelayernorm, is_final, use_keras_mha, use_spectral_norm)
+        self.anchor_predict = keras.models.Sequential([
+            keras.layers.Dense(
+                mlp_dim,
+                input_shape=(embed_dim,),
+                activation=mlp_activation),
+            dense(num_anchors*embed_dim, None, use_spectral_norm),
+            keras.layers.Reshape((num_anchors, embed_dim))
+        ])
+        
+    def call(self, x, condition, training=None):
+        anchor_points = self.anchor_predict(condition)
+        h = self.mab1(anchor_points, x)
+        return self.mab2(x, h)
+    
+    def get_config(self):
+        config = super(InducedSetAttentionBlock, self).get_config()
+        config.update({
+            "embed_dim": self.embed_dim,
+            "num_heads": self.num_heads,
+            "num_anchors": self.num_induce,
+            "ff_dim": self.mab2.ff_dim,
+            "ff_activation": self.mab2.ff_activation,
+            "mlp_dim": self.mlp_dim,
+            "mlp_activation": self.mlp_activation,
             "layernorm": self.mab2.layernorm,
             "prelayernorm": self.mab2.prelayernorm,
             "is_final": self.mab2.is_final,
@@ -290,3 +352,4 @@ SAB = SetAttentionBlock
 ISAB = InducedSetAttentionBlock
 PMA = PoolingByMultiHeadAttention
 ISE = InducedSetEncoder
+CSAB = ConditionedSetAttentionBlock
