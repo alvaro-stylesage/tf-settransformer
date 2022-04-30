@@ -13,6 +13,30 @@ DEFAULT_ACTIVATION_FN = "relu"
 
 # Utility Functions --------------------------------------------------------------------------------
 
+def static_vars(**kwargs):
+    def decorate(func):
+        for k in kwargs:
+            setattr(func, k, kwargs[k])
+        return func
+    return decorate
+
+@static_vars(layers={})
+def CustomLayer(Layer):
+    """
+    A decorator for keeping track of custom layers
+    """
+    CustomLayer.layers[Layer.__name__] = Layer
+    return Layer
+
+def custom_layers():
+    """
+    Fetch custom layer instances
+    """
+    layers = CustomLayer.layers.copy()
+    return layers
+
+# Layer Utility Functions --------------------------------------------------------------------------
+
 def spectral_norm(*args, **kwargs):
     import tensorflow_addons as tfa
     return tfa.layers.SpectralNormalization(*args, **kwargs)
@@ -71,7 +95,8 @@ class MultiHeadAttention(keras.layers.Layer):
         })
         return config
 
-    
+
+@CustomLayer
 class MultiHeadAttentionBlock(keras.layers.Layer):
     def __init__(self,
                  embed_dim,
@@ -166,12 +191,14 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         })
         return config
 
-
+    
+@CustomLayer
 class SetAttentionBlock(MultiHeadAttentionBlock):
     def call(self, x, training=None):
         return super(SetAttentionBlock, self).call(x, training=training)
     
-    
+
+@CustomLayer
 class InducedSetAttentionBlock(keras.layers.Layer):
     def __init__(self,
                  embed_dim,
@@ -187,7 +214,6 @@ class InducedSetAttentionBlock(keras.layers.Layer):
                  **kwargs):
         super(InducedSetAttentionBlock, self).__init__(**kwargs)
         self.embed_dim = embed_dim
-        self.num_heads = num_heads
         self.num_induce = num_induce
         self.mab1 = MultiHeadAttentionBlock(
             embed_dim, num_heads, ff_dim, ff_activation, layernorm,
@@ -212,7 +238,7 @@ class InducedSetAttentionBlock(keras.layers.Layer):
         config = super(InducedSetAttentionBlock, self).get_config()
         config.update({
             "embed_dim": self.embed_dim,
-            "num_heads": self.num_heads,
+            "num_heads": self.mab2.num_heads,
             "num_induce": self.num_induce,
             "ff_dim": self.mab2.ff_dim,
             "ff_activation": self.mab2.ff_activation,
@@ -225,6 +251,7 @@ class InducedSetAttentionBlock(keras.layers.Layer):
         return config
     
 
+@CustomLayer
 class ConditionedSetAttentionBlock(keras.layers.Layer):
     def __init__(self,
                  embed_dim,
@@ -242,7 +269,6 @@ class ConditionedSetAttentionBlock(keras.layers.Layer):
                  **kwargs):
         super(ConditionedSetAttentionBlock, self).__init__(**kwargs)
         self.embed_dim = embed_dim
-        self.num_heads = num_heads
         self.num_anchors = num_anchors
         self.mlp_dim = mlp_dim if mlp_dim is not None else 2*embed_dim
         self.mlp_activation = mlp_activation
@@ -254,7 +280,7 @@ class ConditionedSetAttentionBlock(keras.layers.Layer):
             prelayernorm, is_final, use_keras_mha, use_spectral_norm)
         self.anchor_predict = keras.models.Sequential([
             keras.layers.Dense(
-                mlp_dim,
+                self.mlp_dim,
                 input_shape=(embed_dim,),
                 activation=mlp_activation),
             dense(num_anchors*embed_dim, None, use_spectral_norm),
@@ -267,11 +293,11 @@ class ConditionedSetAttentionBlock(keras.layers.Layer):
         return self.mab2(x, h)
     
     def get_config(self):
-        config = super(InducedSetAttentionBlock, self).get_config()
+        config = super(ConditionedSetAttentionBlock, self).get_config()
         config.update({
             "embed_dim": self.embed_dim,
-            "num_heads": self.num_heads,
-            "num_anchors": self.num_induce,
+            "num_heads": self.mab2.num_heads,
+            "num_anchors": self.num_anchors,
             "ff_dim": self.mab2.ff_dim,
             "ff_activation": self.mab2.ff_activation,
             "mlp_dim": self.mlp_dim,
@@ -283,10 +309,11 @@ class ConditionedSetAttentionBlock(keras.layers.Layer):
             "use_spectral_norm": self.mab2.use_spectral_norm
         })
         return config
-    
-    
+
+
 # Pooling Methods ----------------------------------------------------------------------------------
-    
+
+@CustomLayer
 class PoolingByMultiHeadAttention(keras.layers.Layer):
     def __init__(self,
                  num_seeds,
@@ -326,8 +353,8 @@ class PoolingByMultiHeadAttention(keras.layers.Layer):
         config.update({
             "num_seeds": self.num_seeds,
             "embed_dim": self.embed_dim,
-            "num_heads": self.num_heads,
-            "ff_dim": self.mab2.ff_dim,
+            "num_heads": self.mab.num_heads,
+            "ff_dim": self.mab.ff_dim,
             "ff_activation": self.mab.ff_activation,
             "layernorm": self.mab.layernorm,
             "prelayernorm": self.mab.prelayernorm,
@@ -337,7 +364,8 @@ class PoolingByMultiHeadAttention(keras.layers.Layer):
         })
         return config
     
-    
+
+@CustomLayer
 class InducedSetEncoder(PoolingByMultiHeadAttention):
     """
     Same as PMA, except resulting rows are summed together.
