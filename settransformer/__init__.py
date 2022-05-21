@@ -49,9 +49,10 @@ def spectral_dense(dim, use_spectral_norm=False, activation=None, **kwargs):
 
 # Layer Definitions --------------------------------------------------------------------------------
 
-class MultiHeadAttention(keras.layers.Layer):
+@CustomLayer
+class VaswaniMultiHeadAttention(keras.layers.Layer):
     def __init__(self, embed_dim, num_heads, use_spectral_norm=False, **kwargs):
-        super(MultiHeadAttention, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         assert embed_dim % num_heads == 0, "Embed dim must be divisible by the number of heads"
 
@@ -74,7 +75,6 @@ class MultiHeadAttention(keras.layers.Layer):
         if k is None:
             k = v
         q, k, v = self.fc_q(q), self.fc_k(k), self.fc_v(v)
-        num_batches = tf.shape(q)[0]
 
         # Divide for multi-head attention
         q_split = tf.concat(tf.split(q, self.num_heads, 2), 0)
@@ -87,7 +87,7 @@ class MultiHeadAttention(keras.layers.Layer):
         return out
 
     def get_config(self):
-        config = super(MultiHeadAttention, self).get_config()
+        config = super().get_config()
         config.update({
             "embed_dim": self.embed_dim,
             "num_heads": self.num_heads,
@@ -109,7 +109,7 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
                  use_keras_mha=True,
                  use_spectral_norm=False,
                  **kwargs):
-        super(MultiHeadAttentionBlock, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.ff_dim = embed_dim if ff_dim is None else ff_dim
@@ -124,7 +124,7 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         if use_keras_mha:
             self.att = keras.layers.MultiHeadAttention(key_dim=embed_dim, num_heads=num_heads)
         else:
-            self.att = MultiHeadAttention(embed_dim, num_heads, use_spectral_norm)
+            self.att = VaswaniMultiHeadAttention(embed_dim, num_heads, use_spectral_norm)
 
         # Feed-forward layer
         ff_dim = embed_dim if ff_dim is None else ff_dim
@@ -179,7 +179,7 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
 
 
     def get_config(self):
-        config = super(MultiHeadAttentionBlock, self).get_config()
+        config = super().get_config()
         config.update({
             "embed_dim": self.embed_dim,
             "num_heads": self.num_heads,
@@ -197,7 +197,7 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
 @CustomLayer
 class SetAttentionBlock(MultiHeadAttentionBlock):
     def call(self, x, training=None):
-        return super(SetAttentionBlock, self).call(x, training=training)
+        return super().call(x, training=training)
 
 
 @CustomLayer
@@ -214,7 +214,7 @@ class InducedSetAttentionBlock(keras.layers.Layer):
                  use_keras_mha=True,
                  use_spectral_norm=False,
                  **kwargs):
-        super(InducedSetAttentionBlock, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.embed_dim = embed_dim
         self.num_induce = num_induce
         self.mab1 = MultiHeadAttentionBlock(
@@ -223,12 +223,11 @@ class InducedSetAttentionBlock(keras.layers.Layer):
         self.mab2 = MultiHeadAttentionBlock(
             embed_dim, num_heads, ff_dim, ff_activation, layernorm,
             prelayernorm, is_final, use_keras_mha, use_spectral_norm)
-
-    def build(self, input_shape):
         self.inducing_points = self.add_weight(
             shape=(1, self.num_induce, self.embed_dim),
             initializer="glorot_uniform", # xavier_uniform from pytorch implementation
-            trainable=True)
+            trainable=True,
+            name="Inducing_Points")
 
     def call(self, x):
         batch_size = tf.shape(x)[0]
@@ -237,7 +236,7 @@ class InducedSetAttentionBlock(keras.layers.Layer):
         return self.mab2(x, h)
 
     def get_config(self):
-        config = super(InducedSetAttentionBlock, self).get_config()
+        config = super().get_config()
         config.update({
             "embed_dim": self.embed_dim,
             "num_heads": self.mab2.num_heads,
@@ -269,7 +268,7 @@ class ConditionedSetAttentionBlock(keras.layers.Layer):
                  use_keras_mha=True,
                  use_spectral_norm=False,
                  **kwargs):
-        super(ConditionedSetAttentionBlock, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.embed_dim = embed_dim
         self.num_anchors = num_anchors
         self.mlp_dim = mlp_dim if mlp_dim is not None else 2*embed_dim
@@ -295,7 +294,7 @@ class ConditionedSetAttentionBlock(keras.layers.Layer):
         return self.mab2(x, h)
 
     def get_config(self):
-        config = super(ConditionedSetAttentionBlock, self).get_config()
+        config = super().get_config()
         config.update({
             "embed_dim": self.embed_dim,
             "num_heads": self.mab2.num_heads,
@@ -329,19 +328,17 @@ class PoolingByMultiHeadAttention(keras.layers.Layer):
                  use_keras_mha=True,
                  use_spectral_norm=False,
                  **kwargs):
-        super(PoolingByMultiHeadAttention, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.num_seeds = num_seeds
         self.embed_dim = embed_dim
         self.mab = MultiHeadAttentionBlock(
             embed_dim, num_heads, ff_dim, ff_activation, layernorm,
             prelayernorm, is_final, use_keras_mha, use_spectral_norm)
-
-
-    def build(self, input_shape):
         self.seed_vectors = self.add_weight(
             shape=(1, self.num_seeds, self.embed_dim),
             initializer="random_normal",
-            trainable=True)
+            trainable=True,
+            name="Seeds")
 
 
     def call(self, z):
@@ -351,7 +348,7 @@ class PoolingByMultiHeadAttention(keras.layers.Layer):
 
 
     def get_config(self):
-        config = super(PoolingByMultiHeadAttention, self).get_config()
+        config = super().get_config()
         config.update({
             "num_seeds": self.num_seeds,
             "embed_dim": self.embed_dim,
@@ -373,7 +370,7 @@ class InducedSetEncoder(PoolingByMultiHeadAttention):
     Same as PMA, except resulting rows are summed together.
     """
     def call(self, x):
-        out = super(InducedSetEncoder, self).call(x)
+        out = super().call(x)
         return tf.reduce_sum(out, axis=1)
 
 # Alias exports
