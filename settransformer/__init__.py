@@ -138,18 +138,9 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         self.ffn = keras.Sequential([
             keras.layers.Dense(self.ff_dim, activation=self.ff_activation),
             spectral_dense(self.embed_dim, self.use_spectral_norm)])
-        # self.ffn = keras.layers.Dense(self.embed_dim, activation=self.ff_activation)
 
         if self.use_layernorm:
             self.layernorms = defaultdict(lambda: keras.layers.LayerNormalization(epsilon=1e-6))
-
-            # Use layer normalization (yeah, this could be improved somehow...)
-            # self.layernorm1 = keras.layers.LayerNormalization(epsilon=1e-6)
-            # self.layernorm2 = keras.layers.LayerNormalization(epsilon=1e-6)
-            # if self.pre_layernorm:
-            #     self.layernorm3 = keras.layers.LayerNormalization(epsilon=1e-6)
-            #     if self.is_final_block:
-            #         self.layernorm4 = keras.layers.LayerNormalization(epsilon=1e-6)
 
 
     def call_prenorm(self, x, y, training=None):
