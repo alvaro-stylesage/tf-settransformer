@@ -254,8 +254,8 @@ class InducedSetAttentionBlock(keras.layers.Layer):
             "use_spectral_norm": self.mab2.use_spectral_norm
         })
         return config
-
-
+    
+    
 @CustomLayer
 class ConditionedInducedSetAttentionBlock(keras.layers.Layer):
     """
@@ -270,10 +270,12 @@ class ConditionedInducedSetAttentionBlock(keras.layers.Layer):
         embed_dim,
         num_heads,
         num_anchors,
+        condition_dim=None,
         ff_dim=None,
         ff_activation=DEFAULT_ACTIVATION_FN,
-        mlp_dim=None,
-        mlp_activation=DEFAULT_ACTIVATION_FN,
+        anchor_mlp_dim=None,
+        anchor_mlp_activation="tanh",
+        anchor_mlp=None,
         use_layernorm=True,
         pre_layernorm=False,
         is_final_block=False,
@@ -284,7 +286,8 @@ class ConditionedInducedSetAttentionBlock(keras.layers.Layer):
         super().__init__(**kwargs)
         self.embed_dim = embed_dim
         self.num_anchors = num_anchors
-        self.mlp_dim = mlp_dim if mlp_dim is not None else 2*embed_dim
+        self.condition_dim = condition_dim
+        self.mlp_dim = mlp_dim if mlp_dim is not None else condition_dim
         self.mlp_activation = mlp_activation
 
         self.mab1 = MultiHeadAttentionBlock(
@@ -294,17 +297,24 @@ class ConditionedInducedSetAttentionBlock(keras.layers.Layer):
             embed_dim, num_heads, ff_dim, ff_activation, use_layernorm,
             pre_layernorm, is_final_block, use_keras_mha, use_spectral_norm)
 
-        self.predict_anchors = keras.models.Sequential([
-            keras.layers.Dense(
-                self.mlp_dim,
-                input_shape=(embed_dim,),
-                activation=mlp_activation),
-            spectral_dense(num_anchors*embed_dim, use_spectral_norm),
-            keras.layers.Reshape((num_anchors, embed_dim))
-        ])
+        if anchor_mlp is None:
+            self.anchor_mlp = keras.models.Sequential([
+                keras.layers.Dense(
+                    2*self.dim_cond,
+                    input_shape=(condition_dim,),
+                    activation=mlp_activation),
+                keras.layers.Dense(
+                    2*self.dim_cond,
+                    input_shape=(condition_dim,),
+                    activation=mlp_activation),
+                spectral_dense(num_anchors*embed_dim, use_spectral_norm),
+                keras.layers.Reshape((num_anchors, embed_dim))
+            ])
+        else:
+            self.anchor_mlp = anchor_mlp
 
     def call(self, x, condition, training=None):
-        anchor_points = self.predict_anchors(condition)
+        anchor_points = self.anchor_mlp(condition)
         h = self.mab1(anchor_points, x)
         return self.mab2(x, h)
 
@@ -314,10 +324,12 @@ class ConditionedInducedSetAttentionBlock(keras.layers.Layer):
             "embed_dim": self.embed_dim,
             "num_heads": self.mab2.num_heads,
             "num_anchors": self.num_anchors,
+            "condition_dim": self.condition_dim,
             "ff_dim": self.mab2.ff_dim,
             "ff_activation": self.mab2.ff_activation,
-            "mlp_dim": self.mlp_dim,
-            "mlp_activation": self.mlp_activation,
+            "anchor_mlp_dim": self.mlp_dim,
+            "anchor_mlp_activation": self.mlp_activation,
+            "anchor_mlp": self.anchor_mlp,
             "use_layernorm": self.mab2.use_layernorm,
             "pre_layernorm": self.mab2.pre_layernorm,
             "is_final_block": self.mab2.is_final_block,
