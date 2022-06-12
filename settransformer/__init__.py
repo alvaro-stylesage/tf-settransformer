@@ -10,8 +10,6 @@ import numpy as np
 import tensorflow as tf
 import tensorflow.keras as keras
 
-DEFAULT_ACTIVATION_FN = "relu"
-
 # Utility Functions --------------------------------------------------------------------------------
 
 def static_vars(**kwargs):
@@ -104,7 +102,7 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         embed_dim,
         num_heads,
         ff_dim=None,
-        ff_activation=DEFAULT_ACTIVATION_FN,
+        ff_activation="relu",
         use_layernorm=True,
         pre_layernorm=False,
         is_final_block=False,
@@ -143,7 +141,7 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
             self.layernorms = defaultdict(lambda: keras.layers.LayerNormalization(epsilon=1e-6))
 
 
-    def call_prenorm(self, x, y, training=None):
+    def call_pre_layernorm(self, x, y, training=None):
         x_norm = self.layernorms['x'](x)
         y_norm = self.layernorms['y'](y) if y is not x else x_norm
 
@@ -159,13 +157,7 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         return out
 
 
-    def call(self, x, y=None, training=None):
-        if y is None:
-            y = x
-
-        if self.use_layernorm and self.pre_layernorm:
-            return self.call_prenorm(x, y, training)
-
+    def call_post_layernorm(self, x, y, training=None):
         # Multi-head attention
         attn = x + self.att(x, y, y, training=training)
         if self.use_layernorm:
@@ -176,6 +168,13 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         if self.use_layernorm:
             out = self.layernorms["final"](out)
         return out
+
+
+    def call(self, inputs: tuple, training=None):
+        x, y = inputs[0], inputs[1]
+        if self.use_layernorm and self.pre_layernorm:
+            return self.call_pre_layernorm(x, y, training)
+        return self.call_post_layernorm(x, y, training)
 
 
     def get_config(self):
@@ -197,7 +196,7 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
 @CustomLayer
 class SetAttentionBlock(MultiHeadAttentionBlock):
     def call(self, x, training=None):
-        return super().call(x, x, training=training)
+        return super().call((x, x), training=training)
 
 
 @CustomLayer
@@ -208,7 +207,7 @@ class InducedSetAttentionBlock(keras.layers.Layer):
         num_heads,
         num_induce,
         ff_dim=None,
-        ff_activation=DEFAULT_ACTIVATION_FN,
+        ff_activation="relu",
         use_layernorm=True,
         pre_layernorm=False,
         is_final_block=False,
@@ -219,6 +218,7 @@ class InducedSetAttentionBlock(keras.layers.Layer):
         super().__init__(**kwargs)
         self.embed_dim = embed_dim
         self.num_induce = num_induce
+        self.use_spectral_norm = use_spectral_norm
 
         self.mab1 = MultiHeadAttentionBlock(
             embed_dim, num_heads, ff_dim, ff_activation, use_layernorm,
@@ -227,17 +227,18 @@ class InducedSetAttentionBlock(keras.layers.Layer):
             embed_dim, num_heads, ff_dim, ff_activation, use_layernorm,
             pre_layernorm, is_final_block, use_keras_mha, use_spectral_norm)
 
+    def build(self, input_shape):
         self.inducing_points = self.add_weight(
             shape=(1, self.num_induce, self.embed_dim),
             initializer="glorot_uniform", # xavier_uniform from pytorch implementation
             trainable=True,
             name="Inducing_Points")
 
-    def call(self, x):
+    def call(self, x, training=None):
         batch_size = tf.shape(x)[0]
         i = tf.tile(self.inducing_points, (batch_size, 1, 1))
-        h = self.mab1(i, x)
-        return self.mab2(x, h)
+        h = self.mab1((i, x), training=training)
+        return self.mab2((x, h), training=training)
 
     def get_config(self):
         config = super().get_config()
@@ -251,13 +252,13 @@ class InducedSetAttentionBlock(keras.layers.Layer):
             "pre_layernorm": self.mab2.pre_layernorm,
             "is_final_block": self.mab2.is_final_block,
             "use_keras_mha": self.mab2.use_keras_mha,
-            "use_spectral_norm": self.mab2.use_spectral_norm
+            "use_spectral_norm": self.use_spectral_norm
         })
         return config
-    
-    
+
+
 @CustomLayer
-class ConditionedInducedSetAttentionBlock(keras.layers.Layer):
+class ConditionedInducedSetAttentionBlock(InducedSetAttentionBlock):
     """
     The Conditioned Induced Set Attention Block (CISAB) transforms sets by performing
     MHA over the set and predicted anchor points. This method was proposed by the paper:
@@ -265,78 +266,21 @@ class ConditionedInducedSetAttentionBlock(keras.layers.Layer):
     https://www.ml.informatik.tu-darmstadt.de/papers/stelzner2020ood_gast.pdf
     """
 
-    def __init__(
-        self,
-        embed_dim,
-        num_heads,
-        num_anchors,
-        condition_dim=None,
-        ff_dim=None,
-        ff_activation=DEFAULT_ACTIVATION_FN,
-        anchor_mlp_dim=None,
-        anchor_mlp_activation="tanh",
-        anchor_mlp=None,
-        use_layernorm=True,
-        pre_layernorm=False,
-        is_final_block=False,
-        use_keras_mha=True,
-        use_spectral_norm=False,
-        **kwargs
-    ):
-        super().__init__(**kwargs)
-        self.embed_dim = embed_dim
-        self.num_anchors = num_anchors
-        self.condition_dim = condition_dim
-        self.mlp_dim = mlp_dim if mlp_dim is not None else condition_dim
-        self.mlp_activation = mlp_activation
+    def build(self, input_shape):
+        condition_shape = input_shape[1][1:]
+        self.anchor_predictor = keras.models.Sequential([
+            spectral_dense(
+                self.num_induce*self.embed_dim,
+                use_spectral_norm=self.use_spectral_norm,
+                input_shape=condition_shape),
+            keras.layers.Reshape((self.num_induce, self.embed_dim))
+        ], name="Anchor_Points")
 
-        self.mab1 = MultiHeadAttentionBlock(
-            embed_dim, num_heads, ff_dim, ff_activation, use_layernorm,
-            pre_layernorm, False, use_keras_mha, use_spectral_norm)
-        self.mab2 = MultiHeadAttentionBlock(
-            embed_dim, num_heads, ff_dim, ff_activation, use_layernorm,
-            pre_layernorm, is_final_block, use_keras_mha, use_spectral_norm)
-
-        if anchor_mlp is None:
-            self.anchor_mlp = keras.models.Sequential([
-                keras.layers.Dense(
-                    2*self.dim_cond,
-                    input_shape=(condition_dim,),
-                    activation=mlp_activation),
-                keras.layers.Dense(
-                    2*self.dim_cond,
-                    input_shape=(condition_dim,),
-                    activation=mlp_activation),
-                spectral_dense(num_anchors*embed_dim, use_spectral_norm),
-                keras.layers.Reshape((num_anchors, embed_dim))
-            ])
-        else:
-            self.anchor_mlp = anchor_mlp
-
-    def call(self, x, condition, training=None):
-        anchor_points = self.anchor_mlp(condition)
-        h = self.mab1(anchor_points, x)
-        return self.mab2(x, h)
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({
-            "embed_dim": self.embed_dim,
-            "num_heads": self.mab2.num_heads,
-            "num_anchors": self.num_anchors,
-            "condition_dim": self.condition_dim,
-            "ff_dim": self.mab2.ff_dim,
-            "ff_activation": self.mab2.ff_activation,
-            "anchor_mlp_dim": self.mlp_dim,
-            "anchor_mlp_activation": self.mlp_activation,
-            "anchor_mlp": self.anchor_mlp,
-            "use_layernorm": self.mab2.use_layernorm,
-            "pre_layernorm": self.mab2.pre_layernorm,
-            "is_final_block": self.mab2.is_final_block,
-            "use_keras_mha": self.mab2.use_keras_mha,
-            "use_spectral_norm": self.mab2.use_spectral_norm
-        })
-        return config
+    def call(self, inputs: tuple, training=None):
+        x, condition = inputs[0], inputs[1]
+        anchor_points = self.anchor_predictor(condition)
+        h = self.mab1((anchor_points, x), training=training)
+        return self.mab2((x, h), training=training)
 
 
 # Pooling Methods ----------------------------------------------------------------------------------
@@ -349,7 +293,7 @@ class PoolingByMultiHeadAttention(keras.layers.Layer):
         embed_dim,
         num_heads,
         ff_dim=None,
-        ff_activation=DEFAULT_ACTIVATION_FN,
+        ff_activation="relu",
         use_layernorm=True,
         pre_layernorm=False,
         is_final_block=False,
@@ -372,10 +316,10 @@ class PoolingByMultiHeadAttention(keras.layers.Layer):
             name="Seeds")
 
 
-    def call(self, z):
+    def call(self, z, training=None):
         batch_size = tf.shape(z)[0]
         seeds = tf.tile(self.seed_vectors, (batch_size, 1, 1))
-        return self.mab(seeds, z)
+        return self.mab((seeds, z), training=training)
 
 
     def get_config(self):
@@ -403,6 +347,8 @@ class InducedSetEncoder(PoolingByMultiHeadAttention):
     def call(self, x):
         out = super().call(x)
         return tf.reduce_sum(out, axis=1)
+
+# --------------------------------------------------------------------------------------------------
 
 # Alias exports
 MAB = MultiHeadAttentionBlock
