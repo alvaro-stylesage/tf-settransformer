@@ -294,6 +294,9 @@ class InducedSetAttentionBlock(keras.layers.Layer):
             initializer="glorot_uniform", # xavier_uniform from pytorch implementation
             trainable=True,
             name="Inducing_Points")
+        
+    def compute_mask(self, inputs, mask):
+        return mask
 
     def call(self, x, training=None):
         batch_size = tf.shape(x)[0]
