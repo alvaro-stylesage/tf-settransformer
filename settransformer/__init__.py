@@ -169,6 +169,7 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         use_spectral_norm=False,
         **kwargs
     ):
+        tf.print("Created")
         super().__init__(**kwargs)
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -194,38 +195,41 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         # Feed-forward layer
         self.ffn = keras.Sequential([
             keras.layers.Dense(self.ff_dim, activation=self.ff_activation),
-            spectral_dense(self.embed_dim, self.use_spectral_norm)])
+            spectral_dense(self.embed_dim, self.use_spectral_norm)])            
 
-        if self.use_layernorm:
-            self.layernorms = defaultdict(lambda: keras.layers.LayerNormalization(epsilon=1e-6))
-
+    def layernorm(self, key):
+        # Keras does not like default dicts...
+        ln_key = f"layernorm_{key}"
+        if not hasattr(self, ln_key):
+            setattr(self, ln_key, keras.layers.LayerNormalization(epsilon=1e-6))
+        return getattr(self, ln_key)
 
     def call_pre_layernorm(self, x, y, training=None):
-        x_norm = self.layernorms['x'](x)
-        y_norm = self.layernorms['y'](y) if y is not x else x_norm
+        x_norm = self.layernorm('x')(x)
+        y_norm = self.layernorm('y')(y) if y is not x else x_norm
 
         # Multi-head attention
         attn = x + self.att(x_norm, y_norm, y_norm, training=training)
 
         # ff-projection
-        out = self.layernorms["attn"](attn)
+        out = self.layernorm("attn")(attn)
         out = attn + self.ffn(out)
 
         if self.is_final_block:
-            out = self.layernorms["final"](out)
+            out = self.layernorm("final")(out)
         return out
 
-
     def call_post_layernorm(self, x, y, training=None):
+        tf.print("Invoked")
         # Multi-head attention
         attn = x + self.att(x, y, y, training=training)
         if self.use_layernorm:
-            attn = self.layernorms["attn"](attn)
+            attn = self.layernorm("attn")(attn)
 
         # ff-projection
         out = attn + self.ffn(attn)
         if self.use_layernorm:
-            out = self.layernorms["final"](out)
+            out = self.layernorm("final")(out)
         return out
     
     def compute_mask(self, inputs, mask):
@@ -236,7 +240,6 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         if self.use_layernorm and self.pre_layernorm:
             return self.call_pre_layernorm(x, y, training)
         return self.call_post_layernorm(x, y, training)
-
 
     def get_config(self):
         config = super().get_config()
