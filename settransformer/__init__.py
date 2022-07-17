@@ -76,7 +76,7 @@ class DenseSN(keras.layers.Dense):
                                  trainable=False)
         self.input_spec = keras.layers.InputSpec(min_ndim=2, axes={-1: input_dim})
         self.built = True
-        
+
     def call(self, inputs, training=None):
         def _l2normalize(v, eps=1e-12):
             return v / (K.sum(v ** 2) ** 0.5 + eps)
@@ -99,7 +99,7 @@ class DenseSN(keras.layers.Dense):
             W_bar = K.reshape(W_bar, W_shape)
         else:
             with tf.control_dependencies([self.u.assign(_u)]):
-                 W_bar = K.reshape(W_bar, W_shape)  
+                 W_bar = K.reshape(W_bar, W_shape)
         output = K.dot(inputs, W_bar)
         if self.use_bias:
             output = K.bias_add(output, self.bias, data_format='channels_last')
@@ -169,7 +169,6 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         use_spectral_norm=False,
         **kwargs
     ):
-        tf.print("Created")
         super().__init__(**kwargs)
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -195,7 +194,7 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         # Feed-forward layer
         self.ffn = keras.Sequential([
             keras.layers.Dense(self.ff_dim, activation=self.ff_activation),
-            spectral_dense(self.embed_dim, self.use_spectral_norm)])            
+            spectral_dense(self.embed_dim, self.use_spectral_norm)])
 
     def layernorm(self, key):
         # Keras does not like default dicts...
@@ -220,7 +219,6 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         return out
 
     def call_post_layernorm(self, x, y, training=None):
-        tf.print("Invoked")
         # Multi-head attention
         attn = x + self.att(x, y, y, training=training)
         if self.use_layernorm:
@@ -231,7 +229,7 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         if self.use_layernorm:
             out = self.layernorm("final")(out)
         return out
-    
+
     def compute_mask(self, inputs, mask):
         return mask
 
@@ -297,7 +295,7 @@ class InducedSetAttentionBlock(keras.layers.Layer):
             initializer="glorot_uniform", # xavier_uniform from pytorch implementation
             trainable=True,
             name="Inducing_Points")
-        
+
     def compute_mask(self, inputs, mask):
         return mask
 
