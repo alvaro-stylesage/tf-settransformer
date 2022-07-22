@@ -10,8 +10,16 @@ import numpy as np
 import tensorflow as tf
 import tensorflow.keras as keras
 import tensorflow.keras.backend as K
+import warnings
+
+DISABLE_WARNINGS = False
 
 # Utility Functions --------------------------------------------------------------------------------
+
+def warn(warning_type, msg):
+    if DISABLE_WARNINGS:
+        return
+    warnings.warn(msg, warning_type)
 
 def static_vars(**kwargs):
     def decorate(func):
@@ -182,6 +190,8 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
 
         # Attention layer
         if self.use_keras_mha:
+            if self.use_spectral_norm:
+                warn(UserWarning, "Keras MHA does not support spectral-normalization")
             self.att = keras.layers.MultiHeadAttention(
                 key_dim=self.embed_dim,
                 num_heads=self.num_heads)
