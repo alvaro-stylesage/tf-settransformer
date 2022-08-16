@@ -208,7 +208,6 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
 
     def build(self, input_shape):
         if self.use_keras_mha:
-            print("Built from signature", input_shape)
             self.att._build_from_signature(input_shape[0], input_shape[1])
 
     def layernorm(self, key):
@@ -273,7 +272,6 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
 @CustomLayer
 class SetAttentionBlock(MultiHeadAttentionBlock):
     def build(self, input_shape):
-        print("Building...", input_shape)
         return super().build((input_shape, input_shape))
 
     def call(self, x, training=None):
