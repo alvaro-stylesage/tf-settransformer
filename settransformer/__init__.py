@@ -206,6 +206,11 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
             keras.layers.Dense(self.ff_dim, activation=self.ff_activation),
             spectral_dense(self.embed_dim, self.use_spectral_norm)])
 
+    def build(self, input_shape):
+        if self.use_keras_mha:
+            print("Built from signature", input_shape)
+            self.att._build_from_signature(input_shape[0], input_shape[1])
+
     def layernorm(self, key):
         # Keras does not like default dicts...
         ln_key = f"layernorm_{key}"
@@ -267,6 +272,10 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
 
 @CustomLayer
 class SetAttentionBlock(MultiHeadAttentionBlock):
+    def build(self, input_shape):
+        print("Building...", input_shape)
+        return super().build((input_shape, input_shape))
+
     def call(self, x, training=None):
         return super().call((x, x), training=training)
 
