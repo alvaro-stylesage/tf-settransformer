@@ -6,8 +6,8 @@ The official pytorch repository is available at: https://github.com/juho-lee/set
 
 ## Installation
 
-The set transformer framework can be installed by executing the following command in this repository:
+The set transformer framework can be installed by executing the following command:
 
 ```bash
-pip install .
+pip install tf-settransformer
 ```
