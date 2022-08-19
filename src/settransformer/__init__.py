@@ -5,7 +5,6 @@ The paper can be found here: https://arxiv.org/abs/1810.00825
 The official pytorch implementation can be at: https://github.com/juho-lee/set_transformer
 """
 
-from collections import defaultdict
 import numpy as np
 import tensorflow as tf
 import tensorflow.keras as keras
