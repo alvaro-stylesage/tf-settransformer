@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tf-settransformer"
+version = "0.2.3"
+authors = [
+  { name="David Ludwig", email="davidludwigii@gmail.com" },
+]
+description = "An unofficial implementation of the Set Transformer framework in Tensorflow/Keras based on the paper: Set Transformer: A Framework for Attention-based Permutation-Invariant Neural Networks"
+readme = "README.md"
+license = { file="LICENSE" }
+requires-python = ">=3.6"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/DLii-Research/tf-settransformer"
+"Bug Tracker" = "https://github.com/DLii-Research/tf-settransformer/issues"
