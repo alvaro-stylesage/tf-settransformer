@@ -7,13 +7,14 @@ The official pytorch implementation can be at: https://github.com/juho-lee/set_t
 
 import numpy as np
 import tensorflow as tf
-import tensorflow.keras as keras
-import tensorflow.keras.backend as K
 import warnings
+from typing import Any, TypeVar
 
 DISABLE_WARNINGS = False
 
 # Utility Functions --------------------------------------------------------------------------------
+
+KerasLayer = TypeVar("KerasLayer", bound=tf.keras.layers.Layer)
 
 def warn(warning_type, msg):
     if DISABLE_WARNINGS:
@@ -28,14 +29,14 @@ def static_vars(**kwargs):
     return decorate
 
 @static_vars(layers={})
-def CustomLayer(Layer):
+def CustomLayer(Layer: KerasLayer) -> KerasLayer:
     """
     A decorator for keeping track of custom layers
     """
     CustomLayer.layers[Layer.__name__] = Layer
     return Layer
 
-def custom_layers():
+def custom_layers() -> dict[str, tf.keras.layers.Layer]:
     """
     Fetch custom layer instances
     """
@@ -51,12 +52,12 @@ def custom_layers():
 
 def spectral_dense(dim, use_spectral_norm=False, activation=None, **kwargs):
     if not use_spectral_norm or activation is not None:
-        return keras.layers.Dense(dim, activation=activation, **kwargs)
+        return tf.keras.layers.Dense(dim, activation=activation, **kwargs)
     return DenseSN(dim, **kwargs)
 
 # Layer Definitions --------------------------------------------------------------------------------
 
-class DenseSN(keras.layers.Dense):
+class DenseSN(tf.keras.layers.Dense):
     """
     https://github.com/IShengFang/SpectralNormalizationKeras/blob/master/SpectralNormalizationKeras.py#L17-L69
     Spectral Normalization Layer
@@ -78,13 +79,14 @@ class DenseSN(keras.layers.Dense):
         else:
             self.bias = None
         self.u = self.add_weight(shape=tuple([1, self.kernel.shape.as_list()[-1]]),
-                                 initializer=keras.initializers.RandomNormal(0, 1),
+                                 initializer=tf.keras.initializers.RandomNormal(0, 1),
                                  name='sn',
                                  trainable=False)
-        self.input_spec = keras.layers.InputSpec(min_ndim=2, axes={-1: input_dim})
+        self.input_spec = tf.keras.layers.InputSpec(min_ndim=2, axes={-1: input_dim})
         self.built = True
 
     def call(self, inputs, training=None):
+        K = tf.keras.backend
         def _l2normalize(v, eps=1e-12):
             return v / (K.sum(v ** 2) ** 0.5 + eps)
         def power_iteration(W, u):
@@ -114,9 +116,10 @@ class DenseSN(keras.layers.Dense):
             output = self.activation(output)
         return output
 
+
 @CustomLayer
-class VaswaniMultiHeadAttention(keras.layers.Layer):
-    def __init__(self, embed_dim, num_heads, use_spectral_norm=False, **kwargs):
+class VaswaniMultiHeadAttention(tf.keras.layers.Layer):
+    def __init__(self, embed_dim: int, num_heads: int, use_spectral_norm: bool = False, **kwargs):
         super().__init__(**kwargs)
 
         assert embed_dim % num_heads == 0, "Embed dim must be divisible by the number of heads"
@@ -162,18 +165,18 @@ class VaswaniMultiHeadAttention(keras.layers.Layer):
 
 
 @CustomLayer
-class MultiHeadAttentionBlock(keras.layers.Layer):
+class MultiHeadAttentionBlock(tf.keras.layers.Layer):
     def __init__(
         self,
-        embed_dim,
-        num_heads,
-        ff_dim=None,
-        ff_activation="relu",
-        use_layernorm=True,
-        pre_layernorm=False,
-        is_final_block=False,
-        use_keras_mha=True,
-        use_spectral_norm=False,
+        embed_dim: int,
+        num_heads: int,
+        ff_dim: int|None = None,
+        ff_activation: Any|None = "relu",
+        use_layernorm: bool = True,
+        pre_layernorm: bool = False,
+        is_final_block: bool = False,
+        use_keras_mha: bool = True,
+        use_spectral_norm: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -188,10 +191,11 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         self.use_spectral_norm = use_spectral_norm
 
         # Attention layer
+        self.att: tf.keras.layers.MultiHeadAttention|VaswaniMultiHeadAttention
         if self.use_keras_mha:
             if self.use_spectral_norm:
                 warn(UserWarning, "Keras MHA does not support spectral-normalization")
-            self.att = keras.layers.MultiHeadAttention(
+            self.att = tf.keras.layers.MultiHeadAttention(
                 key_dim=self.embed_dim,
                 num_heads=self.num_heads)
         else:
@@ -201,8 +205,8 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
                 self.use_spectral_norm)
 
         # Feed-forward layer
-        self.ffn = keras.Sequential([
-            keras.layers.Dense(self.ff_dim, activation=self.ff_activation),
+        self.ffn = tf.keras.Sequential([
+            tf.keras.layers.Dense(self.ff_dim, activation=self.ff_activation),
             spectral_dense(self.embed_dim, self.use_spectral_norm)])
 
     def build(self, input_shape):
@@ -213,7 +217,7 @@ class MultiHeadAttentionBlock(keras.layers.Layer):
         # Keras does not like default dicts...
         ln_key = f"layernorm_{key}"
         if not hasattr(self, ln_key):
-            setattr(self, ln_key, keras.layers.LayerNormalization(epsilon=1e-6))
+            setattr(self, ln_key, tf.keras.layers.LayerNormalization(epsilon=1e-6))
         return getattr(self, ln_key)
 
     def call_pre_layernorm(self, x, y, training=None):
@@ -278,19 +282,19 @@ class SetAttentionBlock(MultiHeadAttentionBlock):
 
 
 @CustomLayer
-class InducedSetAttentionBlock(keras.layers.Layer):
+class InducedSetAttentionBlock(tf.keras.layers.Layer):
     def __init__(
         self,
-        embed_dim,
-        num_heads,
-        num_induce,
-        ff_dim=None,
-        ff_activation="relu",
-        use_layernorm=True,
-        pre_layernorm=False,
-        is_final_block=False,
-        use_keras_mha=True,
-        use_spectral_norm=False,
+        embed_dim: int,
+        num_heads: int,
+        num_induce: int,
+        ff_dim: int|None = None,
+        ff_activation: Any|None = "relu",
+        use_layernorm: bool = True,
+        pre_layernorm: bool = False,
+        is_final_block: bool = False,
+        use_keras_mha: bool = True,
+        use_spectral_norm: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -347,14 +351,14 @@ class ConditionedInducedSetAttentionBlock(InducedSetAttentionBlock):
     https://www.ml.informatik.tu-darmstadt.de/papers/stelzner2020ood_gast.pdf
     """
 
-    def build(self, input_shape):
+    def build(self, input_shape: tuple):
         condition_shape = input_shape[1][1:]
-        self.anchor_predictor = keras.models.Sequential([
+        self.anchor_predictor = tf.keras.models.Sequential([
             spectral_dense(
                 self.num_induce*self.embed_dim,
                 use_spectral_norm=self.use_spectral_norm,
                 input_shape=condition_shape),
-            keras.layers.Reshape((self.num_induce, self.embed_dim))
+            tf.keras.layers.Reshape((self.num_induce, self.embed_dim))
         ], name="Anchor_Points")
 
     def call(self, inputs: tuple, training=None):
@@ -367,19 +371,19 @@ class ConditionedInducedSetAttentionBlock(InducedSetAttentionBlock):
 # Pooling Methods ----------------------------------------------------------------------------------
 
 @CustomLayer
-class PoolingByMultiHeadAttention(keras.layers.Layer):
+class PoolingByMultiHeadAttention(tf.keras.layers.Layer):
     def __init__(
         self,
-        num_seeds,
-        embed_dim,
-        num_heads,
-        ff_dim=None,
-        ff_activation="relu",
-        use_layernorm=True,
-        pre_layernorm=False,
-        is_final_block=False,
-        use_keras_mha=True,
-        use_spectral_norm=False,
+        num_seeds: int,
+        embed_dim: int,
+        num_heads: int,
+        ff_dim: int|None = None,
+        ff_activation: Any|None = "relu",
+        use_layernorm: bool = True,
+        pre_layernorm: bool = False,
+        is_final_block: bool = False,
+        use_keras_mha: bool = True,
+        use_spectral_norm: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
