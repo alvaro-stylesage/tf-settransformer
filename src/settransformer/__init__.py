@@ -10,6 +10,8 @@ import tensorflow as tf
 import warnings
 from typing import Any, TypeVar
 
+__version__ = "0.2.6"
+
 DISABLE_WARNINGS = False
 
 # Utility Functions --------------------------------------------------------------------------------
@@ -133,7 +135,7 @@ class VaswaniMultiHeadAttention(tf.keras.layers.Layer):
         self.fc_v = spectral_dense(embed_dim, use_spectral_norm)
 
 
-    def call(self, q, v, k=None, training=None):
+    def call(self, q, v, k=None, return_attention_scores=False, training=None):
         """
         Compute multi-head attention in exactly the same manner
         as the official implementation.
@@ -152,6 +154,8 @@ class VaswaniMultiHeadAttention(tf.keras.layers.Layer):
         # Compute attention
         att = tf.nn.softmax(tf.matmul(q_split, k_split, transpose_b=True)/np.sqrt(self.embed_dim), 2)
         out = tf.concat(tf.split(tf.matmul(att, v_split), self.num_heads, 0), 2)
+        if return_attention_scores:
+            return out, att
         return out
 
     def get_config(self):
@@ -220,12 +224,16 @@ class MultiHeadAttentionBlock(tf.keras.layers.Layer):
             setattr(self, ln_key, tf.keras.layers.LayerNormalization(epsilon=1e-6))
         return getattr(self, ln_key)
 
-    def call_pre_layernorm(self, x, y, training=None):
+    def call_pre_layernorm(self, x, y, return_attention_scores, training=None):
         x_norm = self.layernorm('x')(x)
         y_norm = self.layernorm('y')(y) if y is not x else x_norm
 
         # Multi-head attention
-        attn = x + self.att(x_norm, y_norm, y_norm, training=training)
+        attn, attn_scores = self.att(
+            x_norm, y_norm, y_norm,
+            return_attention_scores=True,
+            training=training)
+        attn = x + attn
 
         # ff-projection
         out = self.layernorm("attn")(attn)
@@ -233,11 +241,15 @@ class MultiHeadAttentionBlock(tf.keras.layers.Layer):
 
         if self.is_final_block:
             out = self.layernorm("final")(out)
+
+        if return_attention_scores:
+            return out, attn_scores
         return out
 
-    def call_post_layernorm(self, x, y, training=None):
+    def call_post_layernorm(self, x, y, return_attention_scores, training=None):
         # Multi-head attention
-        attn = x + self.att(x, y, y, training=training)
+        attn, attn_scores = self.att(x, y, y, return_attention_scores=True, training=training)
+        attn = x + attn
         if self.use_layernorm:
             attn = self.layernorm("attn")(attn)
 
@@ -245,16 +257,19 @@ class MultiHeadAttentionBlock(tf.keras.layers.Layer):
         out = attn + self.ffn(attn)
         if self.use_layernorm:
             out = self.layernorm("final")(out)
+
+        if return_attention_scores:
+            return out, attn_scores
         return out
 
     def compute_mask(self, inputs, mask):
         return mask
 
-    def call(self, inputs: tuple, training=None):
+    def call(self, inputs: tuple, return_attention_scores=False, training=None):
         x, y = inputs[0], inputs[1]
         if self.use_layernorm and self.pre_layernorm:
-            return self.call_pre_layernorm(x, y, training)
-        return self.call_post_layernorm(x, y, training)
+            return self.call_pre_layernorm(x, y, return_attention_scores, training)
+        return self.call_post_layernorm(x, y, return_attention_scores, training)
 
     def get_config(self):
         config = super().get_config()
@@ -277,8 +292,11 @@ class SetAttentionBlock(MultiHeadAttentionBlock):
     def build(self, input_shape):
         return super().build((input_shape, input_shape))
 
-    def call(self, x, training=None):
-        return super().call((x, x), training=training)
+    def call(self, x, return_attention_scores=False, training=None):
+        return super().call(
+            (x, x),
+            return_attention_scores=return_attention_scores,
+            training=training)
 
 
 @CustomLayer
@@ -319,11 +337,12 @@ class InducedSetAttentionBlock(tf.keras.layers.Layer):
     def compute_mask(self, inputs, mask):
         return mask
 
-    def call(self, x, training=None):
+    def call(self, x, return_attention_scores=False, training=None):
         batch_size = tf.shape(x)[0]
         i = tf.tile(self.inducing_points, (batch_size, 1, 1))
-        h = self.mab1((i, x), training=training)
-        return self.mab2((x, h), training=training)
+        h = self.mab1((i, x), return_attention_scores=False, training=training)
+        result = self.mab2((x, h), return_attention_scores=return_attention_scores, training=training)
+        return result
 
     def get_config(self):
         config = super().get_config()
