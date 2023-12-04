@@ -10,7 +10,7 @@ import tensorflow as tf
 import warnings
 from typing import Any, TypeVar
 
-__version__ = "0.2.6"
+__version__ = "0.3.0"
 
 DISABLE_WARNINGS = False
 
@@ -119,10 +119,43 @@ class DenseSN(tf.keras.layers.Dense):
         return output
 
 
+class AttributableMultiHeadAttentionTrait:
+    def __init__(self, num_heads: int, *args, _enable_attribution: bool = False, **kwargs):
+        import inspect
+        if "num_heads" in inspect.getfullargspec(super().__init__).args:
+            super().__init__(num_heads=num_heads, *args, **kwargs)
+        else:
+            super().__init__(*args, **kwargs)
+        if _enable_attribution:
+            self.enable_attribution()
+
+    def enable_attribution(self):
+        if self.is_attribution_enabled:
+            return
+        self._alpha = tf.Variable([1.0]*self.num_heads, trainable=False, name="alpha", dtype=tf.float32)
+
+    @property
+    def is_attribution_enabled(self):
+        return hasattr(self, "_alpha")
+
+    def set_head_attribution_weight(self, head, alpha):
+        self._alpha.scatter_nd_update([[head]], [alpha])
+
+    def set_head_attribution_weights(self, heads, alphas):
+        self._alpha.scatter_nd_update(tf.reshape(heads, (-1, 1)), alphas)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "_enable_attribution": self.is_attribution_enabled
+        })
+        return config
+
+
 @CustomLayer
-class VaswaniMultiHeadAttention(tf.keras.layers.Layer):
+class VaswaniMultiHeadAttention(AttributableMultiHeadAttentionTrait, tf.keras.layers.Layer):
     def __init__(self, embed_dim: int, num_heads: int, use_spectral_norm: bool = False, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(num_heads=num_heads, **kwargs)
 
         assert embed_dim % num_heads == 0, "Embed dim must be divisible by the number of heads"
 
@@ -133,7 +166,6 @@ class VaswaniMultiHeadAttention(tf.keras.layers.Layer):
         self.fc_q = spectral_dense(embed_dim, use_spectral_norm)
         self.fc_k = spectral_dense(embed_dim, use_spectral_norm)
         self.fc_v = spectral_dense(embed_dim, use_spectral_norm)
-
 
     def call(self, q, v, k=None, return_attention_scores=False, training=None):
         """
@@ -153,6 +185,8 @@ class VaswaniMultiHeadAttention(tf.keras.layers.Layer):
 
         # Compute attention
         att = tf.nn.softmax(tf.matmul(q_split, k_split, transpose_b=True)/np.sqrt(self.embed_dim), 2)
+        if self.is_attribution_enabled:
+            att = att * self._alpha
         out = tf.concat(tf.split(tf.matmul(att, v_split), self.num_heads, 0), 2)
         if return_attention_scores:
             return out, att
@@ -166,6 +200,43 @@ class VaswaniMultiHeadAttention(tf.keras.layers.Layer):
             "use_spectral_norm": self.use_spectral_norm
         })
         return config
+
+
+@CustomLayer
+class KerasMultiHeadAttention(AttributableMultiHeadAttentionTrait, tf.keras.layers.MultiHeadAttention):
+    """
+    An extended version of Keras' MultiHeadAttention layer to allow attention attribution.
+    """
+    def __init__(self, num_heads, key_dim, *args, **kwargs):
+        super().__init__(num_heads=num_heads, key_dim=key_dim, *args, **kwargs)
+
+    def _compute_attention(self, query, key, value, attention_mask=None, training=None):
+        # Note: Applying scalar multiply at the smaller end of einsum improves
+        # XLA performance, but may introduce slight numeric differences in
+        # the Transformer attention head.
+        query = tf.multiply(query, 1.0 / np.sqrt(float(self._key_dim)))
+
+        # Take the dot product between "query" and "key" to get the raw
+        # attention scores.
+        attention_scores = tf.einsum(self._dot_product_equation, key, query)
+
+        attention_scores = self._masked_softmax(attention_scores, attention_mask)
+
+        # Multiply by alpha to allow pruning/attribution computation
+        if self.is_attribution_enabled:
+            attention_scores = tf.multiply(tf.reshape(self._alpha, (1, -1, 1, 1)), attention_scores)
+
+        # This is actually dropping out entire tokens to attend to, which might
+        # seem a bit unusual, but is taken from the original Transformer paper.
+        attention_scores_dropout = self._dropout_layer(attention_scores, training=training)
+
+        # `context_layer` = [B, T, N, H]
+        attention_output = tf.einsum(self._combine_equation, attention_scores_dropout, value)
+        return attention_output, attention_scores
+
+    @property
+    def num_heads(self):
+        return self._num_heads
 
 
 @CustomLayer
@@ -195,11 +266,11 @@ class MultiHeadAttentionBlock(tf.keras.layers.Layer):
         self.use_spectral_norm = use_spectral_norm
 
         # Attention layer
-        self.att: tf.keras.layers.MultiHeadAttention|VaswaniMultiHeadAttention
+        self.att: KerasMultiHeadAttention|VaswaniMultiHeadAttention
         if self.use_keras_mha:
             if self.use_spectral_norm:
                 warn(UserWarning, "Keras MHA does not support spectral-normalization")
-            self.att = tf.keras.layers.MultiHeadAttention(
+            self.att = KerasMultiHeadAttention(
                 key_dim=self.embed_dim,
                 num_heads=self.num_heads)
         else:
