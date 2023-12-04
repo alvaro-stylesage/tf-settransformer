@@ -8,7 +8,7 @@ The official pytorch implementation can be at: https://github.com/juho-lee/set_t
 import numpy as np
 import tensorflow as tf
 import warnings
-from typing import Any, TypeVar
+from typing import Any, Dict, TypeVar, Union
 
 __version__ = "0.3.0"
 
@@ -38,7 +38,7 @@ def CustomLayer(Layer: KerasLayer) -> KerasLayer:
     CustomLayer.layers[Layer.__name__] = Layer
     return Layer
 
-def custom_layers() -> dict[str, tf.keras.layers.Layer]:
+def custom_layers() -> Dict[str, tf.keras.layers.Layer]:
     """
     Fetch custom layer instances
     """
@@ -245,8 +245,8 @@ class MultiHeadAttentionBlock(tf.keras.layers.Layer):
         self,
         embed_dim: int,
         num_heads: int,
-        ff_dim: int|None = None,
-        ff_activation: Any|None = "relu",
+        ff_dim: Union[int,None] = None,
+        ff_activation: Union[Any,None] = "relu",
         use_layernorm: bool = True,
         pre_layernorm: bool = False,
         is_final_block: bool = False,
@@ -377,8 +377,8 @@ class InducedSetAttentionBlock(tf.keras.layers.Layer):
         embed_dim: int,
         num_heads: int,
         num_induce: int,
-        ff_dim: int|None = None,
-        ff_activation: Any|None = "relu",
+        ff_dim: Union[int,None] = None,
+        ff_activation: Union[Any,None] = "relu",
         use_layernorm: bool = True,
         pre_layernorm: bool = False,
         is_final_block: bool = False,
@@ -467,8 +467,8 @@ class PoolingByMultiHeadAttention(tf.keras.layers.Layer):
         num_seeds: int,
         embed_dim: int,
         num_heads: int,
-        ff_dim: int|None = None,
-        ff_activation: Any|None = "relu",
+        ff_dim: Union[int,None] = None,
+        ff_activation: Union[Any,None] = "relu",
         use_layernorm: bool = True,
         pre_layernorm: bool = False,
         is_final_block: bool = False,
