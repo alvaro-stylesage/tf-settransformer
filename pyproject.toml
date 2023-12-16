@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tf-settransformer"
-version = "0.3.0"
+version = "0.3.1"
 authors = [
   { name="David Ludwig", email="davidludwigii@gmail.com" },
 ]

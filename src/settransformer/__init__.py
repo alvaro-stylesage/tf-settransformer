@@ -10,7 +10,7 @@ import tensorflow as tf
 import warnings
 from typing import Any, Dict, TypeVar, Union
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 DISABLE_WARNINGS = False
 
