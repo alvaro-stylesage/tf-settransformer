@@ -214,7 +214,7 @@ class MultiHeadAttentionBlock(tf.keras.layers.Layer):
 
     def build(self, input_shape):
         if self.use_keras_mha:
-            self.att._build_from_signature(input_shape[0], input_shape[1])
+            self.att.build(input_shape[0], input_shape[1])
 
     def layernorm(self, key):
         # Keras does not like default dicts...
